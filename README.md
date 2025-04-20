@@ -127,27 +127,5 @@ edge {
     curve-style: bezier; /* Or other styles like 'straight', 'haystack' */
 }
 
-/* --- Tag-Based Styling Example --- */
-/* These rules style nodes based on Obsidian tags */
-/* They might override depth-based colors depending on CSS order/specificity */
-
-.tag-projectA {
-    background-color: blue; /* Example: ProjectA notes are blue */
-    border-color: darkblue;
-    border-width: 2px;
-    color: white; /* Ensure text is readable on dark background */
-}
-
-.tag-paper {
-    shape: rectangle; /* Example: Paper notes are rectangles */
-    width: 50px;
-    height: 45px;
-    font-size: 5; /* Smaller font size for smaller nodes */
-    text-valign: center;
-    text-max-width: 45px;
-    text-opacity: 1;
-    /* background-color: white; */ /* Optional: Override depth color */
-}
-
 /* Add other custom styles or tag styles below */
 ```
