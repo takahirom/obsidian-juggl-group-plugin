@@ -23,6 +23,8 @@ cd obsidian-juggl-group-plugin
 npm run dev
 ```
 
+Open Settings > Community plugins > Juggl Group and enable the plugin.
+
 ## Recommended CSS
 
 Add the following styles to your Juggl custom CSS file (`.obsidian/plugins/juggl/graph.css`) to visually represent the hierarchy and hide redundant links. You can customize the colors and styles further.
