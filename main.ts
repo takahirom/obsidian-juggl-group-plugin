@@ -1,323 +1,318 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath } from 'obsidian';
+import {
+    App,
+    Editor,
+    MarkdownView,
+    Modal,
+    Notice,
+    Plugin,
+    PluginSettingTab,
+    Setting,
+    TFile,
+    normalizePath
+} from 'obsidian';
 // Import necessary Obsidian and Juggl APIs
-import { IJugglPlugin, VizId, IJuggl, NodeDefinition } from 'juggl-api';
+import {IJugglPlugin, VizId, IJuggl, NodeDefinition} from 'juggl-api'; // Ensure NodeDefinition is imported if used, though it might not be directly needed here.
 
 // This plugin modifies a Juggl graph to create compound nodes based on frontmatter links.
 export default class CompoundNodePlugin extends Plugin {
-	// Store a reference to the Juggl plugin API.
-	private juggl?: IJugglPlugin;
+    // Store a reference to the Juggl plugin API.
+    private juggl?: IJugglPlugin;
 
-	async onload() {
-		// Ensure the Juggl plugin dependency is loaded and available before proceeding.
-		// This might be necessary if load order isn't guaranteed.
-		await this.app.plugins.loadPlugin('juggl');
-		this.juggl = this.app.plugins.getPlugin('juggl') as IJugglPlugin;
+    async onload() {
+        // Ensure the Juggl plugin dependency is loaded and available before proceeding.
+        await this.app.plugins.loadPlugin('juggl');
+        this.juggl = this.app.plugins.getPlugin('juggl') as IJugglPlugin;
 
-		// Check if Juggl was loaded successfully. This plugin cannot function without it.
-		if (!this.juggl) {
-			console.error("Juggl plugin could not be loaded or found.");
-			new Notice("Juggl plugin not found. Compound Node Plugin requires Juggl.");
-			return; // Stop loading if Juggl isn't present.
-		}
-		console.log("Juggl Plugin loaded successfully by CompoundNodePlugin.");
+        // Check if Juggl was loaded successfully.
+        if (!this.juggl) {
+            console.error("Juggl plugin could not be loaded or found.");
+            new Notice("Juggl plugin not found. Compound Node Plugin requires Juggl.");
+            return;
+        }
+        console.log("Juggl Plugin loaded successfully by CompoundNodePlugin.");
 
-		// Register callbacks for Juggl graph creation and destruction.
-		this.juggl.registerEvents({
-			// Called whenever a new Juggl graph visualization is created.
-			onJugglCreated: (viz: IJuggl) => this.handleGraphCreated(viz),
-			// Called when a Juggl graph visualization is destroyed (optional cleanup).
-			onJugglDestroyed: (viz: IJuggl) => { /* Cleanup if needed */ }
-		});
-		console.log("Juggl event handlers registered.");
+        // Register callbacks for Juggl graph creation and destruction.
+        this.juggl.registerEvents({
+            onJugglCreated: (viz: IJuggl) => this.handleGraphCreated(viz),
+            onJugglDestroyed: (viz: IJuggl) => { /* Optional cleanup */
+            }
+        });
+        console.log("Juggl event handlers registered.");
 
-		// Register an Obsidian event listener to detect file modifications.
-		// This might be used to update the graph when related files change.
-		this.registerEvent(this.app.vault.on('modify', this.handleFileChange.bind(this)));
-	}
+        // Register an Obsidian event listener for file modifications.
+        this.registerEvent(this.app.vault.on('modify', this.handleFileChange.bind(this)));
+    }
 
-	// Handles the creation of a new Juggl graph instance.
-	private async handleGraphCreated(viz: IJuggl) {
-		console.log("--- handleGraphCreated START ---");
-		try {
-			// Juggl graphs might take a moment to become fully ready after creation.
-			// We need to wait for `vizReady` before interacting with the Cytoscape instance.
-			if (!viz.vizReady) {
-				console.log("⏳ Waiting for vizReady...");
-				// Poll until the visualization is ready, with a timeout.
-				await new Promise<void>((resolve, reject) => {
-					const maxWait = 10000; // Max 10 seconds wait
-					const interval = 100; // Check every 100ms
-					let waited = 0;
-					const checker = setInterval(() => {
-						if (viz.vizReady) {
-							clearInterval(checker);
-							console.log("✅ vizReady confirmed via polling.");
-							resolve();
-						} else {
-							waited += interval;
-							if (waited >= maxWait) {
-								clearInterval(checker);
-								console.error("❌ Timed out waiting for vizReady.");
-								reject(new Error("Timed out waiting for vizReady"));
-							}
-						}
-					}, interval);
-				});
-			} else {
-				console.log("✅ viz already ready.");
-			}
+    // Handles the creation of a new Juggl graph instance.
+    private async handleGraphCreated(viz: IJuggl) {
+        console.log("--- handleGraphCreated START ---");
+        try {
+            // Wait for the visualization to be ready.
+            if (!viz.vizReady) {
+                console.log("⏳ Waiting for vizReady...");
+                // Simplified async wait; replace with your polling if needed
+                await new Promise(resolve => setTimeout(resolve, 500)); // Basic wait, adjust timing or use robust polling
+                if (!viz.vizReady) {
+                    // Still not ready after basic wait, retry or use polling
+                    await new Promise<void>((resolve, reject) => {
+                        const maxWait = 10000;
+                        const interval = 100;
+                        let waited = 0;
+                        const checker = setInterval(() => {
+                            if (viz.vizReady) {
+                                clearInterval(checker);
+                                console.log("✅ vizReady confirmed via polling.");
+                                resolve();
+                            } else {
+                                waited += interval;
+                                if (waited >= maxWait) {
+                                    clearInterval(checker);
+                                    console.error("❌ Timed out waiting for vizReady.");
+                                    reject(new Error("Timed out waiting for vizReady"));
+                                }
+                            }
+                        }, interval);
+                    });
+                }
+            } else {
+                console.log("✅ viz already ready.");
+            }
 
-			// Process all existing nodes in the graph to establish initial parent relationships.
-			console.log("⚙️ Processing initial nodes for parent relationships...");
-			const nodes = viz.viz.elements().nodes().toArray();
-			console.log(`📊 Found ${nodes.length} initial nodes.`);
+            // Process existing nodes for parent relationships.
+            console.log("⚙️ Processing initial nodes for parent relationships...");
+            const nodes = viz.viz.elements().nodes().toArray();
+            console.log(`📊 Found ${nodes.length} initial nodes.`);
 
-			// Process nodes one by one to avoid potential race conditions or complex state management.
-			for (const node of nodes) {
-				// Basic sanity check to ensure the node object is valid before processing.
-				if (node && typeof node.id === 'function' && typeof node.data === 'function') {
-					try {
-						// Process each node to check for a 'parent' link and move it if found.
-						await this.processNode(node, viz);
-					} catch (e) {
-						// Log errors during individual node processing but continue with others.
-						console.error(`🔥 Error processing node ${node.id()}:`, e);
-					}
-				} else {
-					console.warn("⚠️ Invalid node object encountered during iteration:", node);
-				}
-			}
+            // Process nodes sequentially.
+            for (const node of nodes) {
+                if (node && typeof node.id === 'function' && typeof node.data === 'function') {
+                    try {
+                        await this.processNode(node, viz);
+                    } catch (e) {
+                        console.error(`🔥 Error processing node ${node.id()}:`, e);
+                    }
+                } else {
+                    console.warn("⚠️ Invalid node object encountered:", node);
+                }
+            }
 
-			// After potentially moving nodes into parents, restart the layout
-			// to make the compound node structure visually apparent.
-			console.log("🔄 Performing final layout restart.");
-			viz.restartLayout();
+            console.log("⚙️ Calculating node depths...");
+            const allNodes = viz.viz.nodes();
 
-		} catch (error) {
-			// Catch any unexpected errors during the graph handling process.
-			console.error("🔥 Uncaught error in handleGraphCreated:", error);
-			new Notice("Error initializing compound nodes.");
-		} finally {
-			console.log("--- handleGraphCreated END ---");
-		}
-	}
+            // Initialize depth for all nodes
+            allNodes.data('depth', -1); // Mark as uncalculated
 
-	// Processes a single node to determine if it should be moved under a parent node.
-	private async processNode(node: any, viz: IJuggl) {
-		const nodeId = node.id(); // The unique ID of the node in the Cytoscape graph.
-		console.log(`--- processNode START [${nodeId}] ---`);
+            // Recursive function to calculate depth
+            const calculateDepth = (node: any, currentDepth: number) => {
+                const existingDepth = node.data('depth');
+                // Only update if not calculated or if found shallower path (though unlikely needed for strict parent hierarchy)
+                if (existingDepth === -1 || currentDepth < existingDepth) {
+                    node.data('depth', currentDepth);
+                    // console.log(`[${node.id()}] Set depth: ${currentDepth}`); // Uncomment for debugging depth assignment
 
-		const nodeData = node.data();
-		const nodeFilePath = nodeData.path; // The Obsidian vault path associated with this node.
+                    // Recurse for compound children
+                    node.children().forEach((child: any) => {
+                        calculateDepth(child, currentDepth + 1);
+                    });
+                }
+            };
 
-		console.log(`[${nodeId}] Path: ${nodeFilePath}`);
+            // Start calculation from root nodes (nodes without a compound parent)
+            const rootNodes = allNodes.filter((node: any) => node.parent().length === 0);
+            // console.log(`🌳 Found ${rootNodes.length} root nodes.`); // Uncomment for debugging
+            rootNodes.forEach((rootNode: any) => {
+                calculateDepth(rootNode, 0); // Roots are at depth 0
+            });
 
-		// We only care about actual markdown files that have a path.
-		if (!(nodeFilePath && nodeFilePath.endsWith('.md'))) {
-			console.log(`[${nodeId}] Skipping: Not a valid markdown file path.`);
-			console.log(`--- processNode END [${nodeId}] ---`);
-			return;
-		}
+            // Handle any nodes missed (e.g., disconnected components, though less likely with this structure)
+            const uncalculatedNodes = allNodes.filter((node: any) => node.data('depth') === -1);
+            if (uncalculatedNodes.length > 0) {
+                console.warn(`⚠️ Found ${uncalculatedNodes.length} nodes with uncalculated depth. Setting depth to 0.`);
+                uncalculatedNodes.forEach((node: any) => node.data('depth', 0));
+            }
+            console.log("✅ Node depths calculated and set.");
+            // ★★★★★★★★★★★★★★★★★★★★★★★★
+            // ★★★ END: Calculate and set node depth ★★★
+            // ★★★★★★★★★★★★★★★★★★★★★★★★
 
-		// Get the TFile object to access metadata and resolve relative links correctly.
-		const currentFile = this.app.vault.getAbstractFileByPath(nodeFilePath);
-		if (!(currentFile instanceof TFile)) {
-			console.log(`[${nodeId}] Skipping: Could not get TFile for path ${nodeFilePath}.`);
-			console.log(`--- processNode END [${nodeId}] ---`);
-			return;
-		}
+            // Restart layout after potentially moving nodes and setting depths.
+            console.log("🔄 Performing final layout restart.");
+            viz.restartLayout();
 
-		// Read the 'parent' property from the file's frontmatter.
-		let parentLinkText: string | undefined = undefined;
-		const fileCache = this.app.metadataCache.getFileCache(currentFile);
-		// Access frontmatter using optional chaining for safety.
-		parentLinkText = fileCache?.frontmatter?.parent;
-		console.log(`[${nodeId}] Frontmatter check: parent = ${parentLinkText}`);
+        } catch (error) {
+            console.error("🔥 Uncaught error in handleGraphCreated:", error);
+            new Notice("Error initializing compound nodes or calculating depth.");
+        } finally {
+            console.log("--- handleGraphCreated END ---");
+        }
+    }
 
-		// Check if the parent link exists and is in the expected [[wikilink]] format.
-		if (!parentLinkText || typeof parentLinkText !== 'string' || !parentLinkText.startsWith('[[') || !parentLinkText.endsWith(']]')) {
-			console.log(`[${nodeId}] Skipping: No valid parent link found (expected '[[...]]'). Value:`, parentLinkText);
-			console.log(`--- processNode END [${nodeId}] ---`);
-			return;
-		}
+    // Processes a single node for parenting and edge tagging.
+    private async processNode(node: any, viz: IJuggl) {
+        const nodeId = node.id();
+        // console.log(`--- processNode START [${nodeId}] ---`); // Keep logs minimal or conditional
 
-		// Extract the actual link text (e.g., 'My Parent Note') from the [[wikilink]].
-		const linkText = parentLinkText.replace(/[\[\]]/g, '');
-		console.log(`[${nodeId}] Extracted link text: '${linkText}'`);
+        const nodeData = node.data();
+        const nodeFilePath = nodeData.path;
 
-		// Use Obsidian's API to resolve the wikilink relative to the current file's path.
-		// This finds the TFile the link points to, if it exists.
-		const parentFile: TFile | null = this.app.metadataCache.getFirstLinkpathDest(linkText, currentFile.path);
-		console.log(`[${nodeId}] Resolved parent link '${linkText}' to file:`, parentFile ? parentFile.path : 'null');
+        if (!(nodeFilePath && nodeFilePath.endsWith('.md'))) {
+            // console.log(`[${nodeId}] Skipping: Not a valid markdown file path.`);
+            return; // Skip non-markdown nodes silently
+        }
 
-		let targetParentId: string; // The ID of the target parent node in the Cytoscape graph.
-		let parentCyNode: any | null = null; // The Cytoscape node object for the parent.
+        const currentFile = this.app.vault.getAbstractFileByPath(nodeFilePath);
+        if (!(currentFile instanceof TFile)) {
+            // console.log(`[${nodeId}] Skipping: Could not get TFile for path ${nodeFilePath}.`);
+            return; // Skip if file cannot be accessed
+        }
 
-		// --- Determine Parent Node in Cytoscape ---
-		if (parentFile instanceof TFile) {
-			// Case 1: The parent link successfully resolved to an existing file.
-			console.log(`[${nodeId}] ✅ Parent file resolved: ${parentFile.path}. Using its Juggl node.`);
-			// Generate the Juggl/Cytoscape ID for the resolved parent file.
-			targetParentId = VizId.fromFile(parentFile).toId();
-			console.log(`[${nodeId}] Target Parent ID (from resolved file): ${targetParentId}`);
-			// Find this parent node within the current Cytoscape graph instance.
-			parentCyNode = viz.viz.$id(targetParentId);
+        const fileCache = this.app.metadataCache.getFileCache(currentFile);
+        const parentLinkText = fileCache?.frontmatter?.parent;
 
-			if (parentCyNode.length === 0) {
-				// This is unexpected if Juggl processed the file, but could happen.
-				console.warn(`[${nodeId}] ⚠️ Parent file node ${targetParentId} resolved BUT not found in the current graph!? Skipping move.`);
-				console.log(`--- processNode END [${nodeId}] ---`);
-				return;
-			}
-			console.log(`[${nodeId}] Found existing Juggl node ${targetParentId} for parent file.`);
-			// Ensure the existing file node is marked as a parent for styling or identification.
-			if (!parentCyNode.hasClass('parent-node')) {
-				parentCyNode.addClass('parent-node');
-				console.log(`[${nodeId}] ✨ Applied 'parent-node' class to existing node ${targetParentId}.`);
-			}
-		} else {
-			// Case 2: The parent link did not resolve to any known file. Create/use a placeholder.
-			console.log(`[${nodeId}] ❌ Parent link '${linkText}' did not resolve to a file. Using placeholder.`);
-			// Use the raw link text as the ID for the placeholder parent node.
-			targetParentId = linkText;
-			console.log(`[${nodeId}] Target Parent ID (placeholder): ${targetParentId}`);
-			// Ensure a minimal node exists in the graph for this ID.
-			parentCyNode = this.ensureMinimalParentNodeExists(targetParentId, viz);
+        if (!parentLinkText || typeof parentLinkText !== 'string' || !parentLinkText.startsWith('[[') || !parentLinkText.endsWith(']]')) {
+            // console.log(`[${nodeId}] Skipping: No valid parent link found.`);
+            return; // Skip if no valid parent link
+        }
 
-			if (!parentCyNode) {
-				// If we couldn't get or create the placeholder, we can't proceed.
-				console.error(`[${nodeId}] ❌ Failed to get or create placeholder parent node ${targetParentId}. Skipping move.`);
-				console.log(`--- processNode END [${nodeId}] ---`);
-				return;
-			}
-			console.log(`[${nodeId}] Got placeholder parent node ${parentCyNode.id()}.`);
-		}
+        const linkText = parentLinkText.replace(/[\[\]]/g, '');
+        // console.log(`[${nodeId}] Extracted link text: '${linkText}'`);
 
-		// --- Move Node ---
-		// Ensure we have a valid parent node object before attempting the move.
-		if (parentCyNode && parentCyNode.length > 0) {
-			// Prevent a node from being moved into itself.
-			if (nodeId === targetParentId) {
-				console.warn(`[${nodeId}] ⚠️ Attempting to move node into itself (${targetParentId}). Skipping.`);
-				console.log(`--- processNode END [${nodeId}] ---`);
-				return;
-			}
-			console.log(`[${nodeId}] >>> Attempting to move [${nodeId}] INTO parent [${targetParentId}] <<<`);
-			try {
-				// Use Cytoscape's batch operation for potential performance benefits or atomicity.
-				viz.viz.batch(() => {
-					// Execute the move operation: make the current node a child of the target parent.
-					node.move({ parent: targetParentId });
-				});
-				// Verify the move by checking the node's 'parent' data attribute.
-				const currentParent = node.data('parent');
-				console.log(`[${nodeId}] ✅ Node move successful. Current parent data: ${currentParent}`);
-				// Sanity check if the reported parent matches the intended target.
-				if (currentParent !== targetParentId) {
-					console.warn(`[${nodeId}] ⚠️ Post-move parent data (${currentParent}) doesn't match target (${targetParentId})?`);
-				}
-			} catch (moveError) {
-				// Catch errors specifically related to the move operation.
-				console.error(`[${nodeId}] 🔥 Move to parent ${targetParentId} FAILED:`, moveError);
-			}
-		} else {
-			// If, after all checks, the parentCyNode is invalid, log an error.
-			console.error(`[${nodeId}] ❌ Cannot move: Final parent node (${targetParentId}) is invalid or not found after checks.`);
-		}
+        const parentFile: TFile | null = this.app.metadataCache.getFirstLinkpathDest(linkText, currentFile.path);
+        // console.log(`[${nodeId}] Resolved parent link '${linkText}' to file:`, parentFile ? parentFile.path : 'null');
 
-		console.log(`--- processNode END [${nodeId}] ---`);
-	}
+        let targetParentId: string;
+        let parentCyNode: any | null = null;
 
-	// Ensures a minimal node exists in the graph for a given ID (used for unresolved parent links).
-	// If it exists, return it. If not, create it with minimal data and return it.
-	private ensureMinimalParentNodeExists(parentId: string, viz: IJuggl): any | null {
-		console.log(`--- ensureMinimalParentNodeExists START [${parentId}] ---`);
-		// Cannot operate if the core Cytoscape instance isn't available.
-		if (!viz?.viz) {
-			console.error(`[${parentId}] ⚠️ Core Cytoscape instance missing!`);
-			return null;
-		}
+        // Determine Parent Node in Cytoscape
+        if (parentFile instanceof TFile) {
+            targetParentId = VizId.fromFile(parentFile).toId();
+            parentCyNode = viz.viz.$id(targetParentId);
+            if (parentCyNode.length === 0) {
+                console.warn(`[${nodeId}] ⚠️ Parent file node ${targetParentId} resolved BUT not found in graph! Skipping move.`);
+                return;
+            }
+            // console.log(`[${nodeId}] Found existing Juggl node ${targetParentId} for parent file.`);
+            if (!parentCyNode.hasClass('parent-node')) {
+                parentCyNode.addClass('parent-node');
+                // console.log(`[${nodeId}] ✨ Applied 'parent-node' class to existing node ${targetParentId}.`);
+            }
+        } else {
+            targetParentId = linkText; // Use link text as placeholder ID
+            parentCyNode = this.ensureMinimalParentNodeExists(targetParentId, viz);
+            if (!parentCyNode) {
+                console.error(`[${nodeId}] ❌ Failed to get/create placeholder parent node ${targetParentId}. Skipping move.`);
+                return;
+            }
+            // console.log(`[${nodeId}] Got placeholder parent node ${parentCyNode.id()}.`);
+        }
 
-		// Check if a node with this ID already exists in the graph.
-		const existingNodes = viz.viz.$id(parentId);
-		if (existingNodes.length > 0) {
-			console.log(`[${parentId}] ✅ Minimal placeholder node already exists.`);
-			const existingNode = existingNodes[0];
-			// Ensure the existing placeholder also gets the parent class.
-			if (!existingNode.hasClass('parent-node')) {
-				existingNode.addClass('parent-node');
-				console.log(`[${parentId}] ✨ Applied class 'parent-node' to existing placeholder.`);
-			}
-			// Avoid adding extra data to an existing node if it's just a placeholder check.
-			return existingNode;
-		}
+        // Tag the edge corresponding to the parent link before moving
+        if (targetParentId && viz.viz) {
+            const potentialParentEdges = viz.viz.edges(`edge[source = "${nodeId}"][target = "${targetParentId}"]`);
+            if (potentialParentEdges.length > 0) {
+                // console.log(`[${nodeId}] Tagging edge(s) to parent ${targetParentId} with 'structural-parent-edge'.`);
+                potentialParentEdges.addClass('structural-parent-edge');
+            }
+        }
 
-		// If the node doesn't exist, create a new one.
-		console.log(`[${parentId}] ℹ️ Minimal placeholder node does not exist. Attempting add...`);
-		try {
-			// Define the absolute minimum data required to add a node to Cytoscape.
-			const minimalDef = { group: 'nodes' as const, data: { id: parentId } };
-			// Add the node to the graph.
-			const addedCollection = viz.viz.add(minimalDef);
-			const addedNode = addedCollection.length > 0 ? addedCollection[0] : null;
+        // Move Node
+        if (parentCyNode && parentCyNode.length > 0) {
+            if (nodeId === targetParentId) {
+                console.warn(`[${nodeId}] ⚠️ Attempting to move node into itself (${targetParentId}). Skipping.`);
+                return;
+            }
+            // console.log(`[${nodeId}] >>> Attempting to move [${nodeId}] INTO parent [${targetParentId}] <<<`);
+            try {
+                viz.viz.batch(() => {
+                    node.move({parent: targetParentId});
+                });
+                // const currentParent = node.data('parent');
+                // console.log(`[${nodeId}] ✅ Node move successful. Current parent data: ${currentParent}`);
+            } catch (moveError) {
+                console.error(`[${nodeId}] 🔥 Move to parent ${targetParentId} FAILED:`, moveError);
+            }
+        } else {
+            // console.error(`[${nodeId}] ❌ Cannot move: Parent node (${targetParentId}) invalid.`); // Should not happen if checks above pass
+        }
+        // console.log(`--- processNode END [${nodeId}] ---`);
+    }
 
-			// Check if the add operation actually returned a node.
-			if (!addedNode) {
-				console.error(`[${parentId}] ❌ viz.viz.add failed to return a node.`);
-				return null;
-			}
-			console.log(`[${parentId}] ✨ Minimal placeholder node added successfully.`);
 
-			try {
-				// Set the label for the placeholder node, typically using its ID (the link text).
-				// Avoid setting 'path' or 'type' as they are irrelevant for placeholders.
-				addedNode.data({ label: parentId });
-				console.log(`[${parentId}] ✨ Applied data (label) to new placeholder.`);
-			} catch (dataError) {
-				// If setting data fails, remove the partially created node to avoid issues.
-				console.error(`[${parentId}] 🔥 Failed to apply data to new placeholder:`, dataError);
-				addedNode.remove(); // Clean up the failed node addition.
-				return null;
-			}
+    // Ensures a minimal node exists for unresolved parent links. (No changes needed from previous version)
+    private ensureMinimalParentNodeExists(parentId: string, viz: IJuggl): any | null {
+        // console.log(`--- ensureMinimalParentNodeExists START [${parentId}] ---`);
+        if (!viz?.viz) {
+            console.error(`[${parentId}] ⚠️ Core Cytoscape instance missing!`);
+            return null;
+        }
 
-			// Mark the new placeholder as a parent node.
-			addedNode.addClass('parent-node');
-			console.log(`[${parentId}] ✨ Applied class 'parent-node' to new placeholder.`);
-			return addedNode; // Return the newly created and configured node.
+        const existingNodes = viz.viz.$id(parentId);
+        if (existingNodes.length > 0) {
+            // console.log(`[${parentId}] ✅ Minimal placeholder node already exists.`);
+            const existingNode = existingNodes[0];
+            if (!existingNode.hasClass('parent-node')) {
+                existingNode.addClass('parent-node');
+                // console.log(`[${parentId}] ✨ Applied class 'parent-node' to existing placeholder.`);
+            }
+            return existingNode;
+        }
 
-		} catch (e: any) { // Catch any errors during node addition.
-			console.error(`[${parentId}] 🔥 MINIMAL placeholder add FAILED:`, { message: e.message });
-			return null; // Return null on failure.
-		} finally {
-			console.log(`--- ensureMinimalParentNodeExists END [${parentId}] ---`);
-		}
-	}
+        // console.log(`[${parentId}] ℹ️ Minimal placeholder node does not exist. Attempting add...`);
+        try {
+            const minimalDef = {group: 'nodes' as const, data: {id: parentId}};
+            const addedCollection = viz.viz.add(minimalDef);
+            const addedNode = addedCollection.length > 0 ? addedCollection[0] : null;
 
-	// Handles file modification events detected by Obsidian.
-	private async handleFileChange(file: TFile) {
-		// TODO: Review and potentially refine the refresh logic.
-		// A simple node refresh might be sufficient, or full reprocessing might be needed
-		// depending on what changed (e.g., frontmatter vs content).
-		console.log(`File changed: ${file.path}. Refresh logic needs review.`);
-		// Generate the Juggl ID for the modified file.
-		const vizId = VizId.fromFile(file);
-		// Iterate through all currently active Juggl graphs.
-		this.juggl?.activeGraphs().forEach(viz => {
-			// Only interact with graphs that are ready.
-			if (viz.vizReady) {
-				console.log(`Refreshing node for ${file.path} in active graph.`);
-				// Trigger a refresh of the specific node in the graph.
-				// `refreshNode` might update data and potentially re-run layout logic.
-				// Consider if `processNode` needs to be called again instead/additionally.
-				viz.refreshNode(vizId, viz);
-			}
-		});
-	}
+            if (!addedNode) {
+                console.error(`[${parentId}] ❌ viz.viz.add failed to return a node.`);
+                return null;
+            }
+            // console.log(`[${parentId}] ✨ Minimal placeholder node added successfully.`);
 
-	// Called when the plugin is disabled or Obsidian is closing.
-	onunload() {
-		// Perform any cleanup here, e.g., unregistering event handlers if necessary.
-		console.log("Unloading CompoundNodePlugin");
-		// Note: Juggl event handlers might be automatically unregistered by Juggl itself.
-	}
+            try {
+                addedNode.data({label: parentId}); // Set label only for placeholder
+                // console.log(`[${parentId}] ✨ Applied data (label) to new placeholder.`);
+            } catch (dataError) {
+                console.error(`[${parentId}] 🔥 Failed to apply data to new placeholder:`, dataError);
+                addedNode.remove();
+                return null;
+            }
+
+            addedNode.addClass('parent-node');
+            // console.log(`[${parentId}] ✨ Applied class 'parent-node' to new placeholder.`);
+            // console.log(`--- ensureMinimalParentNodeExists END [${parentId}] ---`);
+            return addedNode;
+
+        } catch (e: any) {
+            console.error(`[${parentId}] 🔥 MINIMAL placeholder add FAILED:`, {message: e.message});
+            // console.log(`--- ensureMinimalParentNodeExists END [${parentId}] ---`);
+            return null;
+        }
+    }
+
+
+    // Handles file changes. (No changes needed from previous version)
+    private async handleFileChange(file: TFile) {
+        console.log(`File changed: ${file.path}. Refreshing relevant graphs.`);
+        const vizId = VizId.fromFile(file);
+        // Trigger refresh on relevant graphs; Consider full graph re-process if frontmatter changed significantly
+        this.juggl?.activeGraphs().forEach(viz => {
+            if (viz.vizReady) {
+                const node = viz.viz.$id(vizId.toId());
+                if (node.length > 0) {
+                    console.log(`Refreshing node for ${file.path} in active graph.`);
+                    // Refresh the node data. Consider if full re-processing of this node is needed.
+                    viz.refreshNode(vizId, viz);
+                    // TODO: Re-run depth calculation or relevant parts if structure changed.
+                    // For simplicity, might require full graph refresh on parent change.
+                }
+            }
+        });
+    }
+
+    // Plugin unload cleanup.
+    onunload() {
+        console.log("Unloading CompoundNodePlugin");
+        // Juggl might handle unregistering automatically. Add specific cleanup if needed.
+    }
 }
