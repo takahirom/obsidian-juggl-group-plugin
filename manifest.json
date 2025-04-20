@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "juggl-group",
+	"name": "Juggl Group Plugin",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Group support for Juggl. You can specify a parent group for a Juggl item, and it will be displayed in the Juggl.",
+	"author": "takahirom",
+	"authorUrl": "https://x.com/_takahirom_",
 	"isDesktopOnly": false
 }
