@@ -12,7 +12,7 @@ This plugin enhances the [Juggl](https://juggl.io/) graph view in Obsidian by au
 *   **Automatic Compound Nodes:** Notes with a `parent: [[Parent Note]]` link in their frontmatter will be visually nested inside the 'Parent Note' node in Juggl graphs.
 *   **Placeholder Parents:** If the linked parent note doesn't exist, a placeholder parent node is created to maintain the structure.
 *   **Depth Calculation:** Automatically calculates the nesting depth of each node.
-*   **Custom Styling:** Provides CSS classes (`parent-node`, `structural-parent-edge`) and data attributes (`data(depth)`) for detailed styling via Juggl's custom CSS.
+*   **Custom Styling:** Provides CSS classes (`parent-node`, `structural-parent-edge`, `parent-to-child-edge`) and data attributes (`data(depth)`) for detailed styling via Juggl's custom CSS.
 
 ## Installation
 
@@ -109,6 +109,15 @@ node[depth >= 0] {
 /* This avoids visual redundancy since nesting already shows the relationship */
 edge.structural-parent-edge {
     display: none;
+}
+
+/* Style for edges that connect from parent to child */
+edge.parent-to-child-edge {
+    line-color: #4CAF50; /* Green color for parent-to-child edges */
+    width: 2px;
+    line-style: solid;
+    target-arrow-color: #4CAF50;
+    target-arrow-shape: triangle;
 }
 
 /* Default styling for other edges */

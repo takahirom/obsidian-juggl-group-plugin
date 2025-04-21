@@ -213,6 +213,25 @@ export default class CompoundNodePlugin extends Plugin {
                 // console.log(`[${nodeId}] Tagging edge(s) to parent ${targetParentId} with 'structural-parent-edge'.`);
                 potentialParentEdges.addClass('structural-parent-edge');
             }
+
+            // Tag edges from parent to child with 'parent-to-child-edge' class
+            const parentToChildEdges = viz.viz.edges(`edge[source = "${targetParentId}"][target = "${nodeId}"]`);
+            if (parentToChildEdges.length > 0) {
+                // console.log(`[${nodeId}] Tagging edge(s) from parent ${targetParentId} with 'parent-to-child-edge'.`);
+                parentToChildEdges.addClass('parent-to-child-edge');
+
+                // Get all parent-to-child edges from this parent
+                const allParentToChildEdges = viz.viz.edges(`edge[source = "${targetParentId}"]`);
+
+                // For each edge from parent to child, set its index
+                parentToChildEdges.forEach((edge, i) => {
+                    // Find the index of this edge among all edges from the parent
+                    const edgeIndex = allParentToChildEdges.indexOf(edge);
+                    // Set the edge index as data
+                    edge.data('edgeIndex', edgeIndex);
+                    console.log(`[${nodeId}] Set edge index ${edgeIndex} for edge from parent ${targetParentId} to child ${nodeId}. edge:`, edge);
+                });
+            }
         }
 
         // Move Node
@@ -297,12 +316,12 @@ export default class CompoundNodePlugin extends Plugin {
         const vizId = VizId.fromFile(file);
         // Trigger refresh on relevant graphs; Consider full graph re-process if frontmatter changed significantly
         this.juggl?.activeGraphs().forEach(viz => {
-            if (viz.vizReady) {
+            if (viz != undefined && viz.vizReady) {
                 const node = viz.viz.$id(vizId.toId());
                 if (node.length > 0) {
                     console.log(`Refreshing node for ${file.path} in active graph.`);
                     // Refresh the node data. Consider if full re-processing of this node is needed.
-                    viz.refreshNode(vizId, viz);
+                    viz.restartLayout()
                     // TODO: Re-run depth calculation or relevant parts if structure changed.
                     // For simplicity, might require full graph refresh on parent change.
                 }
